@@ -1,0 +1,97 @@
+---
+title: "zhang_garnett"
+output: html_document
+date: "2024-03-21"
+---
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r}
+library(garnett)
+library(Seurat)
+library(ggplot2)
+library(org.Hs.eg.db)
+```
+
+#read in the macrophage subset from the 20 combined BPH samples
+```{r}
+seurat.mf <- readRDS("macs.integratedADTnorm.RDS")
+DefaultAssay(seurat.mf) <- "RNA"
+```
+
+# create a new CDS object
+```{r}
+cds_mf<-as.CellDataSet(seurat.mf)
+cds_mf<- estimateSizeFactors(cds_mf)
+saveRDS(cds_mf, "cds_mf_v1.RDS")
+
+cds_mf<-readRDS("cds_mf_v1.RDS")
+```
+
+#read in marker genes, check and plot them to identify genes not found in the database
+```{r}
+marker_file<-"zhang_garnett_markeers_orig"
+raw_marker_check <- check_markers(cds_mf, marker_file,
+                              db=org.Hs.eg.db,
+                              cds_gene_id_type = "SYMBOL",
+                              marker_file_gene_id_type = "SYMBOL")
+
+plot_markers(raw_marker_check)
+
+#Genes not found in db: CTD-2337-J16.1, RNA28S5
+#modified marker file and replotted
+#maybe also need to remove ANXA2 bc its a lil ambiguous
+
+
+#training the clasifier and identifying feature genes
+zhang_classifier<-train_cell_classifier(cds_mf, marker_file = marker_file, db=org.Hs.eg.db,
+                                         cds_gene_id_type = "SYMBOL",
+                                         num_unknown = 50,
+                                         marker_file_gene_id_type = "SYMBOL")
+
+feature_genes <- get_feature_genes(zhang_classifier,
+                                   node = "root",
+                                   db = org.Hs.eg.db)
+head(feature_genes)
+
+saveRDS(zhang_classifier,"zhang_classifier.RDS")
+```
+
+#using classify cells function on our BPH sample object
+```{r}
+cds_mf_v2 <- classify_cells(cds_mf, zhang_classifier,
+                           db = org.Hs.eg.db,
+                           cluster_extend = TRUE,
+                           cds_gene_id_type = "SYMBOL")
+
+saveRDS(cds_mf_v2, "zhang_cds_mf_v2.RDS")
+```
+
+#inserting le cell column into the seurat object
+```{r}
+seurat.mf$RA_cell_type<-cds_mf_v2$cell_type
+print(table(seurat.mf@meta.data$RA_cell_type))
+```
+#plotting + visualization
+```{r}
+cols <- c( "#C77CFF","#FF68A1","#00A9FF",  "#E68613", "gray")
+
+plot(DimPlot(seurat.mf, group.by = "RA_cell_type", cols = cols, label = F) + ggtitle("Rheumatoid Arthritis Macrophages in BPH Subclusters"))
+
+pdf("RA_MFs.pdf")
+plot(DimPlot(seurat.mf, group.by = "RA_cell_type", cols = cols, label = F) + ggtitle("Rheumatoid Arthritis Macrophages in BPH Subclusters"))
+dev.off()
+```
+
+#printing the counts and percentages 
+```{r}
+ra_mf_counts <-table(seurat.mf$RA_cell_type, seurat.mf$seurat_clusters)
+ra_mf_counts
+ra_mf_perc <- round((prop.table(ra_mf_counts, margin = 2) * 100), 2)
+ra_mf_perc
+```
+
+
+
+
+

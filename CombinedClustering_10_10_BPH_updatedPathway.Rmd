@@ -1,0 +1,263 @@
+---
+title: "Macrophage 10+10 Anchor-based Subclustering"
+author: "Nadia Atallah Lanman"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    highlight: kate
+    toc: true
+    keep_md: yes
+---
+
+Integrated Clustering of 10 small and 10 large BPH samples was performed.
+```{r knitr_init, echo=FALSE, cache=FALSE, include=FALSE}
+library(knitr)
+library(rmdformats)
+
+## Global options
+options(max.print="75")
+opts_chunk$set(echo=TRUE,
+	             cache=FALSE,
+               prompt=FALSE,
+               tidy=TRUE,
+               comment=NA,
+               message=TRUE,
+               warning=TRUE)
+opts_knit$set(width=75)
+
+```
+
+```{r, include=FALSE}
+
+PCuse <- 15
+res <- 0.5
+```
+
+```{r, include=FALSE}
+library(Seurat)
+library(tidyverse)
+library(purrr)
+library(dplyr)
+library(RColorBrewer)
+require(scales)
+library(clustree)
+library(ggplot2)
+library(sctransform)
+library(future)
+library(future.apply)
+library(biomaRt)
+library(lattice)
+library('org.Hs.eg.db')
+library(DT)
+
+set.seed(42)
+
+#plan("multiprocess", workers=10)
+#options(future.globals.maxSize = 200000*10^24)
+
+seurat.003 <- readRDS("../step2_indivClustering_R4.0/003/Indiv_003.RDS")
+seurat.004 <- readRDS("../step2_indivClustering_R4.0/004/Indiv_004.RDS")
+seurat.006 <- readRDS("../step2_indivClustering_R4.0/006/Indiv_006.RDS")
+seurat.007 <- readRDS("../step2_indivClustering_R4.0/007/Indiv_007.RDS")
+seurat.008 <- readRDS("../step2_indivClustering_R4.0/008/Indiv_008.RDS")
+seurat.009 <- readRDS("../step2_indivClustering_R4.0/009/Indiv_009.RDS")
+seurat.010 <- readRDS("../step2_indivClustering_R4.0/010/Indiv_010.RDS")
+seurat.012 <- readRDS("../step2_indivClustering_R4.0/012/Indiv_012.RDS")
+seurat.013 <- readRDS("../step2_indivClustering_R4.0/013/Indiv_013.RDS")
+seurat.0118 <- readRDS("../step2_indivClustering_R4.0/0118/Indiv_0118.RDS")
+seurat.766 <- readRDS("../step2_indivClustering_R4.0/766/Indiv_766.RDS")
+seurat.1144 <- readRDS("../step2_indivClustering_R4.0/1144/Indiv_1144.RDS")
+seurat.1157 <- readRDS("../step2_indivClustering_R4.0/1157/Indiv_1157.RDS")
+seurat.1195 <- readRDS("../step2_indivClustering_R4.0/1195/Indiv_1195.RDS")
+seurat.1196 <- readRDS("../step2_indivClustering_R4.0/1196/Indiv_1196.RDS")
+seurat.1338 <- readRDS("../step2_indivClustering_R4.0/1338/Indiv_1338.RDS")
+seurat.1344 <- readRDS("../step2_indivClustering_R4.0/1344/Indiv_1344.RDS")
+seurat.1579 <- readRDS("../step2_indivClustering_R4.0/1579/Indiv_1579.RDS")
+seurat.1595 <- readRDS("../step2_indivClustering_R4.0/1595/Indiv_1595.RDS")
+seurat.1652 <- readRDS("../step2_indivClustering_R4.0/1652/Indiv_1652.RDS")
+
+combined.list <-c(seurat.003,seurat.004,seurat.006,seurat.007,seurat.008,seurat.009,seurat.010,seurat.012,
+                  seurat.013,seurat.0118,seurat.766,seurat.1144,seurat.1157,seurat.1195,seurat.1196,
+             seurat.1338,seurat.1344,seurat.1579,seurat.1595,seurat.1652)
+features <- SelectIntegrationFeatures(object.list=combined.list)
+combined.list <- PrepSCTIntegration(object.list=combined.list,anchor.features=features)
+anchors <- FindIntegrationAnchors(object.list=combined.list, anchor.features=features)
+seurat.comb <- IntegrateData(anchorset=anchors)
+seurat.comb <- readRDS("largeIntegrationObject_allBPH.RDS")
+
+#seurat.comb@project.name <- "all"
+DefaultAssay(seurat.comb) <- "integrated"
+my_color_palette.all <- hue_pal()(length(levels(seurat.comb@active.ident)))
+
+meta$ident.type <- paste0(meta$orig.ident,"_",meta$sample.Type)
+seurat.comb <- AddMetaData(seurat.comb,metadata=meta$ident.type,col.name="ident.type")
+```
+
+Number of Cells in each Sample
+```{r message=FALSE, echo=FALSE, error=FALSE, warning=FALSE}
+library(tibble)
+tab <- seurat.comb@meta.data %>% group_by(ident.type) %>% summarise(Count=n())
+saveRDS(tab,"CellCountTable.RDS")
+tab2<- readRDS("CellCountTable.RDS")
+tab2
+```
+
+Principal component analysis was next performed, and principal components selected for using in later analyses.
+```{r elbowplot, echo=FALSE, warning=FALSE, fig.align="center", fig.width=6, fig.height=4,fig.cap= "**Elbow plot for top principal components.**  Generally, PCs are used for further analysis which capture the majority of the variation seen in the data (before the elbow which is seen once the standard deviation associated with the PCs becomes small and does not change much between PCx and PCx+1."}
+
+seurat.comb <- ScaleData(seurat.comb, verbose=FALSE)
+seurat.comb <- RunPCA(seurat.comb,npcs=30, verbose=FALSE)
+ElbowPlot(seurat.comb)
+
+```
+
+## Choosing community detection parameters and clustering cells.
+Finally, a graph-based clustering is used to cluster cells.  The top `r PCuse` PCs were used in clustering the cells. Care must be taken in setting the parameters of the Louvain algorithm-based community detection analysis, specifically the resolution parameter. In general, we will likely always somewhat over- or under- cluster cells. While the location of cells in the plots below are not affected by the resolution parameter, the number of clusters is.  Higher resolutions lead to more clusters. We ran the community detection algorithm with a number of resolution settings and then looked at clustering trees resulting from the chosen resolutions to select the setting that balances sensitivity with cluster stability.  If resolution is set too low, few clusters will be observed.  If resolution is set too high, cluster instability is observed by many low in-proportion edges.  Seurat recommends a resolution value between 0.6-1.2 to be used, however given that cells were selected in this experiment, excluding other populations, it is possible that a lower resolution should be used.  Here, resolutions of 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9,1.0, 1.1, 1.2, and 1.3 were used.  It seems here that `r res` is the optimal resolution. In analyses using resolutions less than `r res`, clusters are split into further clusters, with relatively high proportions of cells splitting off.  However starting with the jump to resolution of `r res+0.1`, clusters become more unstable.  Note, however that we can easily change the resolution setting if desired - this is somewhat of an art and in this case, it is hard to say which resolution setting is ideal (in some projects this is quite obvious).  It will likely be more clear which resolution setting to choose when we combine across sample groups. 
+
+```{r clustree, echo=FALSE, message=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=6,fig.cap= "**Clustering tree plot.**"}
+seurat.comb <- RunUMAP(seurat.comb,reduction="pca",dims=1:PCuse)
+seurat.comb <- FindNeighbors(
+  seurat.comb,
+  dims = 1:PCuse)
+
+fortree <- seurat.comb
+res.vec <- seq(0,1.3,0.1)
+for (r in res.vec){
+fortree <- FindClusters(
+  fortree, 
+  resolution = r)
+}
+saveRDS(fortree,"seurat_for_clustree.RDS")
+fortree <- readRDS("seurat_for_clustree.RDS")
+clustree(fortree, assay="SCT",prefix="integrated_snn_res.")
+
+```
+
+```{r include=FALSE}
+
+seurat.comb <- FindClusters(
+  seurat.comb, 
+  resolution = res)
+
+
+saveRDS(seurat.comb,"largeIntegrationObject_allBPH.RDS")
+```
+
+```{r PCA0.3, echo=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=6,fig.cap= "**PCA plot, with cells colored by detected clusters.**  "}
+
+DimPlot(
+  seurat.comb,
+  reduction = "pca")
+```
+
+```{r UMAP0.3, echo=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=6,fig.cap= "**UMAP plot, with cells colored by detected clusters.**  UMAP is a visualization technique for high dimensional datasets and uses graph layout algorithms to embed data in a low-dimensional space and is capable of doing a fairly good job at preserving global data structures."}
+
+DimPlot(
+  seurat.comb,
+  reduction = "umap")
+
+```
+
+
+```{r UMAPplotsplit, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=12, fig.height=4,fig.cap= "**UMAP Plot colored by cluster and split by sample type.**"}
+
+DimPlot(
+  seurat.comb,
+  reduction = "umap",split.by = 'sample.Type')
+```
+
+```{r numberedUMAPplot, echo=FALSE, message=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=6,fig.cap= "**Numbered UMAP Plot.**"}
+DimPlot(seurat.comb, reduction = "umap", label = TRUE, repel = TRUE, label.size = 6)
+```
+
+```{r numberedUMAPplotsplit, echo=FALSE, message=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=6,fig.cap= "**Numbered UMAP Plot split by 10x replicate.**"}
+DimPlot(seurat.comb, reduction = "umap", group.by="orig.ident",repel=TRUE)
+pdf(file="combined_10_10_orig.ident.pdf", height=6, width=8)
+DimPlot(seurat.comb, reduction = "umap", group.by="orig.ident",repel=TRUE)
+dev.off()
+
+```
+
+
+# Identify cluster biomarkers
+
+Cluster biomarkers were identified using a wilcoxon test which had an adjusted p-value < 0.01.  Only markers which had a logFC > 0.25 and were expressed in one cluster in at lease 10% of the cells of that cluster were returned.  Both up-regulated and down-regulated markers were identified.  All markers are in the file **`r seurat.comb@project.name`_allmarkers.csv**.  Be sure to check adjusted p-values of markers to determine statistical significance.
+
+```{r include=FALSE}
+seurat.obj.markers <- FindAllMarkers(
+  seurat.comb, 
+  only.pos = FALSE, 
+  min.pct = 0.1, 
+  logfc.threshold = 0.25,
+  return.thresh = 0.01)
+usefile <- paste(seurat.comb@project.name,"_allmarkers_use.RDS", sep="")
+write.csv(seurat.obj.markers, file = paste(seurat.comb@project.name,"_allmarkers.csv", sep=""))
+saveRDS(seurat.obj.markers,file=usefile)
+seurat.obj.markers <- readRDS(usefile)
+top10 <- seurat.obj.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+top5 <- seurat.obj.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+top1 <- seurat.obj.markers %>% group_by(cluster) %>% top_n(n = 1, wt = avg_log2FC)
+```
+
+## Visualization of Cluster Markers
+
+### Heatmap of top 5 markers (by fold-change) in each cluster
+
+Clusters were randomly subsampled to 100 cells
+```{r findmarkersHeatmap, echo=FALSE, warning=FALSE, fig.align="center", fig.width=20, fig.height=15,fig.cap= "**Heatmap of top markers.** Only statistically significant markers are shown (p-value <0.01).  Genes are ordered according to fold-change of the marker in the given cluster compared to all other clusters.  Yellow indicates high expression, black indicates median expression and purple indicates a low level of expression."}
+
+DoHeatmap(subset(seurat.comb, downsample=100), features = top5$gene) +NoLegend()
+#plot.cc <- DoHeatmap(combined.integrated, features=top10$gene) + NoLegend()
+#ggplot2::ggsave(filename="ClusterMarkerHeatmap.pdf", plot= plot.cc,units="in",height=15,width=20)
+
+#knitr::include_graphics("ClusterMarkerHeatmap.pdf")
+
+```
+
+```{r markerDotplot, echo=FALSE, warning=FALSE, fig.align="center", fig.height=10, fig.width=25,fig.cap= "**Dotplot of top markers in each cluster.** Only statistically significant markers are shown (p-value <0.01).  Genes are ordered according to fold-change of the marker in the given cluster compared to all other clusters and the top 4 are selected for each. The color of the dots represents the average expression level and the size of the dot corresponds to the percentage of cells in that cluster which express the feature."}
+seurat.obj.markers %>% 
+    group_by(cluster) %>% 
+    dplyr::top_n(n = 4, wt = avg_log2FC) %>% 
+    .$gene %>% unique() %>%
+
+DotPlot(seurat.comb, features = .) + Seurat::RotatedAxis()
+```
+
+```{r markerViolin,  echo=FALSE, warning=FALSE, fig.align="center", fig.width=13, fig.height=30,fig.cap= "**Cluster marker violin plots for top gene in each cluster.**  Clusters are shown on x-axis and normalized expression level is shown on the y-axis."}
+
+seurat.obj.markers %>% 
+    group_by(cluster) %>% 
+    dplyr::top_n(n = 1, wt = avg_log2FC) %>% 
+    .$gene %>% unique() %>%
+
+VlnPlot(seurat.comb,features = ., ncol = 2,pt.size = 0)
+```
+
+```{r markerUMAP,  echo=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=22,fig.cap= "**Cluster marker UMAP plots for top gene in each cluster.**  UMAP plots are shown with expression of the top marker gene in each cluster shown in purple."}
+
+seurat.obj.markers %>% 
+    group_by(cluster) %>% 
+    dplyr::top_n(n = 1, wt = avg_log2FC) %>% 
+    .$gene %>% unique() %>%
+
+FeaturePlot(seurat.comb,features = ., ncol = 2)
+```
+
+## Visualize protein markers
+```{r citeSeq, echo=FALSE, warning=FALSE, fig.align="center", fig.width=10, fig.height=15,fig.cap= "**Protein Marker Visualization"}
+DefaultAssay(seurat.comb) <- "ADT"
+seurat.comb <- NormalizeData(seurat.comb, normalization.method = "CLR", margin=2)
+citeseq_markers.comb <- paste0(seurat.comb@assays$ADT@key, rownames(seurat.comb@assays$ADT@data))
+pdf(file="combined_10_10_citeSeq.pdf", height=20, width=10)
+FeaturePlot(seurat.comb, features=citeseq_markers.comb ,ncol=2)
+dev.off()
+```
+
+```{r citeSeqRidge, message=FALSE, echo=FALSE, error=FALSE, warning=FALSE, fig.align="center", fig.width=10, fig.height=25,fig.cap= "**Protein Marker Visualization"}
+RidgePlot(seurat.comb, features=citeseq_markers.comb,
+            ncol=2)
+```
+# Libraries and Packages used in the Analysis
+```{r}
+sessionInfo()
+```

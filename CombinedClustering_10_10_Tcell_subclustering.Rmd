@@ -1,0 +1,315 @@
+---
+title: "T cell 10+10 Anchor-based Sublustering"
+author: "Nadia Atallah Lanman"
+date: "November 11, 2022"
+output: 
+  html_document:
+    highlight: kate
+    toc: true
+    keep_md: yes
+---
+
+Integrated Clustering of 10 small and 10 large BPH samples was performed.  T cells and CD3+ NK cells were then subset out of this combined clustering by taking clusters 0, 1, 3, 4, 7, 10, 16, and 17 and combined with cells from all other clusters that express CD3D, CD3E, or CD3G.  Next, cells were removed that express CD68, CD19, CD20, and CD79A.  Finally, cells expressing keratins (KRT5, KRT8, KRT15, KRT18, KRT19, KRT81, or KRT86) were removed.  Data was re-normalized, integrated using anchor-based clustering, and communitites were detected.
+
+```{r knitr_init, echo=FALSE, cache=FALSE, include=FALSE}
+library(knitr)
+library(rmdformats)
+
+## Global options
+options(max.print="75")
+opts_chunk$set(echo=TRUE,
+	             cache=FALSE,
+               prompt=FALSE,
+               tidy=TRUE,
+               comment=NA,
+               message=TRUE,
+               warning=TRUE)
+opts_knit$set(width=75)
+
+```
+
+```{r, include=FALSE}
+
+PCuse <- 13
+res <- 0.5
+```
+
+```{r, include=FALSE}
+library(Seurat)
+library(ggsci)
+library(tidyverse)
+library(purrr)
+library(dplyr)
+library(RColorBrewer)
+require(scales)
+library(clustree)
+library(ggplot2)
+library(sctransform)
+library(future)
+library(future.apply)
+library(biomaRt)
+library(lattice)
+library('org.Hs.eg.db')
+library(DT)
+
+set.seed(42)
+
+#plan("multiprocess", workers=10)
+#options(future.globals.maxSize = 200000*10^24)
+
+my_color_palette.t <- colorRampPalette(brewer.pal(n=8, name="Dark2"))(14)
+
+my_color_palette.t <- c("#ebac23","#b80058","008cf9","#006e00","#00bbad","#d163e6","#490d00","#ff9287","#5954d6","#00c6f8","#878500","#00a76c","#bdbdbd")
+
+seurat.comb <- readRDS("largeIntegrationObject_allBPH.RDS")
+
+
+T_cells.keep <- subset(
+  seurat.comb,
+  idents = c("0","1","3","4","7","10","16","17"))
+
+
+otherCells <- subset(
+  seurat.comb,
+  idents = c("2","5","6","8","9","11","12","13","14","15","18","19","20","21"))
+
+DefaultAssay(otherCells) <- "RNA"
+
+other_CD3D <- subset(otherCells,subset= CD3D > 0)
+#3010
+other_NO_CD3D <- subset(otherCells,subset= CD3D <= 0)
+other_CD3E <- subset(other_NO_CD3D,subset= CD3E > 0)
+#2222
+other_NO_CS3D_CD3E <- subset(other_NO_CD3D,subset= CD3E <= 0)
+other_CD3G <- subset(other_NO_CS3D_CD3E,subset= CD3G > 0)
+#410
+
+Tcells.all <- merge(T_cells.keep,y=c(other_CD3D,other_CD3E,other_CD3G))
+#51221
+DefaultAssay(Tcells.all) <- "RNA"
+Tcells.all <- subset(Tcells.all,subset= CD68 <= 0 )
+#47994
+Tcells.all <- subset(Tcells.all,subset= CD19 <= 0 )
+#47869
+Tcells.all <- subset(Tcells.all,subset= MS4A1 <= 0 )
+Tcells.all <- subset(Tcells.all,subset= CD79A <= 0 )
+
+Tcells.all <- subset(Tcells.all,subset= KRT8 <= 0 )
+Tcells.all <- subset(Tcells.all,subset= KRT18 <= 0 )
+Tcells.all <- subset(Tcells.all,subset= KRT5 <= 0 )
+Tcells.all <- subset(Tcells.all,subset= KRT15 <= 0 )
+Tcells.all <- subset(Tcells.all,subset= KRT19 <= 0 )
+Tcells.all <- subset(Tcells.all,subset= KRT81 <= 0 )
+Tcells.all <- subset(Tcells.all,subset= KRT86 <= 0 )
+
+seurat.comb@project.name <- "all"
+DefaultAssay(seurat.comb) <- "integrated"
+
+
+meta <- data.frame(T.integrated@meta.data)
+meta$ident.type <- paste0(meta$orig.ident,"_",meta$sample.Type)
+T.integrated <- AddMetaData(T.integrated,metadata=meta$ident.type,col.name="ident.type")
+
+DefaultAssay(T.integrated) <- "RNA"
+
+no_KIT <- subset(T.integrated,subset= KIT <= 0)
+
+T_cells.keep2 <- subset(
+  no_KIT,
+  idents = c("0","1","2","3","4","5","6","7","8","9","10","11","13"))
+
+c12.macs <- subset(
+  no_KIT,
+  idents = c("12"))
+
+with_CD163 <- subset(T_cells.keep2,subset= CD163 > 0)
+
+no_CD163 <- subset(T_cells.keep2,subset= CD163 <= 0)
+
+T.list <- SplitObject(no_CD163, split.by="orig.ident")
+for (i in 1:length(T.list)){
+  T.list[[i]] <- SCTransform(T.list[[i]], verbose=FALSE)
+}
+T.features <- SelectIntegrationFeatures(object.list=T.list,normalization.method = "SCT", anchor.features = T.features, verbose =FALSE)
+T.list <- PrepSCTIntegration(object.list = T.list, anchor.features=T.features, verbose=TRUE)
+T.list <- readRDS("T.list.RDS")
+T.anchors <- FindIntegrationAnchors(object.list = T.list, normalization.method="SCT", anchor.features = T.features, verbose=TRUE)
+
+T.integrated <- IntegrateData(anchorset=T.anchors, normalization.method="SCT", verbose=FALSE)
+DefaultAssay(T.integrated) <- "integrated"
+
+#make cell cycle plots
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+scored <- CellCycleScoring(T.integrated, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+obj.list <- SplitObject(T.integrated, split.by = "sample.Type") 
+
+```
+
+Principal component analysis was next performed, and principal components selected for using in later analyses.
+```{r elbowplot, echo=FALSE, warning=FALSE, fig.align="center", fig.width=6, fig.height=4,fig.cap= "**Elbow plot for top principal components.**  Generally, PCs are used for further analysis which capture the majority of the variation seen in the data (before the elbow which is seen once the standard deviation associated with the PCs becomes small and does not change much between PCx and PCx+1."}
+
+T.integrated <- RunPCA(T.integrated,npcs=30, verbose=FALSE)
+ElbowPlot(T.integrated)
+
+```
+
+## Choosing community detection parameters and clustering cells.
+Finally, a graph-based clustering is used to cluster cells.  The top `r PCuse` PCs were used in clustering the cells. Care must be taken in setting the parameters of the Louvain algorithm-based community detection analysis, specifically the resolution parameter. In general, we will likely always somewhat over- or under- cluster cells. While the location of cells in the plots below are not affected by the resolution parameter, the number of clusters is.  Higher resolutions lead to more clusters. We ran the community detection algorithm with a number of resolution settings and then looked at clustering trees resulting from the chosen resolutions to select the setting that balances sensitivity with cluster stability.  If resolution is set too low, few clusters will be observed.  If resolution is set too high, cluster instability is observed by many low in-proportion edges.  Seurat recommends a resolution value between 0.6-1.2 to be used, however given that cells were selected in this experiment, excluding other populations, it is possible that a lower resolution should be used.  Here, resolutions of 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9,1.0, 1.1, 1.2, and 1.3 were used.  It seems here that `r res` is the optimal resolution. In analyses using resolutions less than `r res`, clusters are split into further clusters, with relatively high proportions of cells splitting off.  However starting with the jump to resolution of `r res+0.1`, clusters become more unstable.  Note, however that we can easily change the resolution setting if desired - this is somewhat of an art and in this case, it is hard to say which resolution setting is ideal (in some projects this is quite obvious).  It will likely be more clear which resolution setting to choose when we combine across sample groups. 
+
+```{r clustree, echo=FALSE, message=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=6,fig.cap= "**Clustering tree plot.**"}
+T.integrated <- RunUMAP(T.integrated,reduction="pca",dims=1:PCuse)
+T.integrated <- FindNeighbors(
+  T.integrated,
+  dims = 1:PCuse)
+
+fortree <- T.integrated
+res.vec <- seq(0,1.3,0.1)
+for (r in res.vec){
+fortree <- FindClusters(
+  fortree, 
+  resolution = r)
+}
+fortree <- readRDS("seurat_for_clustree.RDS")
+clustree(fortree, assay="SCT",prefix="integrated_snn_res.")
+
+```
+
+```{r include=FALSE}
+
+T.integrated <- FindClusters(
+  T.integrated, 
+  resolution = res)
+
+
+```
+
+```{r PCA0.3, echo=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=6,fig.cap= "**PCA plot, with cells colored by detected clusters.**  "}
+
+DimPlot(
+  T.integrated,
+  reduction = "pca")+scale_color_manual(values = my_color_palette.t)
+```
+
+```{r UMAP0.3, echo=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=6,fig.cap= "**UMAP plot, with cells colored by detected clusters.**  UMAP is a visualization technique for high dimensional datasets and uses graph layout algorithms to embed data in a low-dimensional space and is capable of doing a fairly good job at preserving global data structures."}
+
+DimPlot(
+  T.integrated,
+  reduction = "umap")+scale_color_manual(values = my_color_palette.t)
+
+```
+
+
+
+```{r UMAPplotsplit, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=12, fig.height=4,fig.cap= "**UMAP Plot colored by cluster and split by sample type.**"}
+
+DimPlot(
+  T.integrated,
+  reduction = "umap",split.by = 'sample.Type')+scale_color_manual(values = my_color_palette.t)
+```
+
+```{r numberedUMAPplot, echo=FALSE, message=FALSE, warning=FALSE, fig.align="center", fig.width=10, fig.height=6,fig.cap= "**Numbered UMAP Plot.**"}
+DimPlot(T.integrated, reduction = "umap", label = TRUE, repel = TRUE, label.size = 6)+scale_color_manual(values = my_color_palette.t)
+
+```
+
+
+```{r numberedUMAPplotsplit, echo=FALSE, message=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=6,fig.cap= "**Numbered UMAP Plot split by 10x replicate.**"}
+DimPlot(T.integrated, reduction = "umap", group.by="orig.ident",repel=TRUE)
+
+```
+
+# Identify cluster biomarkers
+
+Cluster biomarkers were identified using a wilcoxon test which had an adjusted p-value < 0.01.  Only markers which had a logFC > 0.25 and were expressed in one cluster in at lease 10% of the cells of that cluster were returned.  Both up-regulated and down-regulated markers were identified.  All markers are in the file **`r T.integrated@project.name`_allmarkers.csv**.  Be sure to check adjusted p-values of markers to determine statistical significance.
+
+```{r include=FALSE}
+seurat.obj.markers <- FindAllMarkers(
+  T.integrated, 
+  only.pos = FALSE, 
+  min.pct = 0.1, 
+  logfc.threshold = 0.25,
+  return.thresh = 0.01)
+T.integrated@project.name <- "Tcells"
+usefile <- paste(T.integrated@project.name,"_allmarkers_use.RDS", sep="")
+seurat.obj.markers <- readRDS(usefile)
+top10 <- seurat.obj.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+top5 <- seurat.obj.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+top1 <- seurat.obj.markers %>% group_by(cluster) %>% top_n(n = 1, wt = avg_log2FC)
+```
+
+## Visualization of Cluster Markers
+
+### Heatmap of top 5 markers (by fold-change) in each cluster
+
+```{r findmarkersHeatmap, echo=FALSE, warning=FALSE, fig.align="center", fig.width=20, fig.height=15,fig.cap= "**Heatmap of top markers.** Only statistically significant markers are shown (p-value <0.01).  Genes are ordered according to fold-change of the marker in the given cluster compared to all other clusters.  Yellow indicates high expression, black indicates median expression and purple indicates a low level of expression."}
+
+DoHeatmap(subset(T.integrated, downsample=100), features = top5$gene) +NoLegend()
+
+```
+
+```{r markerDotplot, echo=FALSE, warning=FALSE, fig.align="center", fig.height=10, fig.width=25,fig.cap= "**Dotplot of top markers in each cluster.** Only statistically significant markers are shown (p-value <0.01).  Genes are ordered according to fold-change of the marker in the given cluster compared to all other clusters and the top 4 are selected for each. The color of the dots represents the average expression level and the size of the dot corresponds to the percentage of cells in that cluster which express the feature."}
+seurat.obj.markers %>% 
+    group_by(cluster) %>% 
+    dplyr::top_n(n = 4, wt = avg_log2FC) %>% 
+    .$gene %>% unique() %>%
+
+DotPlot(T.integrated, features = .) + Seurat::RotatedAxis()
+DefaultAssay(T.integrated) <- "RNA"
+seurat.obj.markers %>% 
+    group_by(cluster) %>% 
+    dplyr::top_n(n = 4, wt = avg_log2FC) %>% 
+    .$gene %>% unique() %>%
+  
+DotPlot(T.integrated, features = .) + Seurat::RotatedAxis() -> g2
+
+g3 <- g2 + theme(text=element_text(size=20),axis.text.x = element_text(size=20),axis.text.y = element_text(size=20),axis.title.y = element_text(size=25),axis.title.x = element_text(size=25))
+
+```
+
+```{r markerViolin,  echo=FALSE, warning=FALSE, fig.align="center", fig.width=13, fig.height=20,fig.cap= "**Cluster marker violin plots for top gene in each cluster.**  Clusters are shown on x-axis and normalized expression level is shown on the y-axis."}
+
+seurat.obj.markers %>% 
+    group_by(cluster) %>% 
+    dplyr::top_n(n = 1, wt = avg_log2FC) %>% 
+    .$gene %>% unique() %>%
+
+VlnPlot(T.integrated,features = ., ncol = 2,pt.size = 0,cols = my_color_palette.t)
+```
+
+```{r markerUMAP,  echo=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=17,fig.cap= "**Cluster marker UMAP plots for top gene in each cluster.**  UMAP plots are shown with expression of the top marker gene in each cluster shown in purple."}
+
+seurat.obj.markers %>% 
+    group_by(cluster) %>% 
+    dplyr::top_n(n = 1, wt = avg_log2FC) %>% 
+    .$gene %>% unique() %>%
+
+FeaturePlot(T.integrated,features = ., ncol = 2)
+
+```
+
+## Visualize protein markers
+
+```{r include=FALSE}
+DefaultAssay(T.integrated) <- "ADT"
+T.integrated <- NormalizeData(T.integrated, normalization.method = "CLR", margin=2)
+citeseq_markers.comb <- paste0(T.integrated@assays$ADT@key,rownames(T.integrated@assays$ADT@data))
+```
+
+```{r citeSeq, echo=FALSE, fig.align="center", fig.cap="**Featyre Plot of protein marker expression**", fig.height=20, fig.width=10, warning=FALSE}
+
+FeaturePlot(T.integrated, features=citeseq_markers.comb,ncol=2)
+
+```
+
+```{r citeSeqRidge, message=FALSE, echo=FALSE, error=FALSE, warning=FALSE, fig.align="center", fig.width=10, fig.height=25,fig.cap= "**Protein Marker Visualization"}
+RidgePlot(T.integrated, features=citeseq_markers.comb,
+            ncol=2)
+DefaultAssay(T.integrated) <- "integrated"
+```
+# Libraries and Packages used in the Analysis
+```{r}
+sessionInfo()
+```

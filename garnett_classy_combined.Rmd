@@ -1,0 +1,136 @@
+
+```{r}
+library(garnett)
+library(Seurat)
+library(ggplot2)
+library(org.Hs.eg.db)
+```
+
+```{r}
+seurat.comb <- readRDS("largeIntegrationObject_allBPH.RDS")
+DefaultAssay(seurat.comb) <- "RNA"
+
+classifier <- readRDS("YS_Garnett_Classifier_75DEG_human.rds")
+
+pbmc_classifier <- readRDS("hsPBMC_20191017.RDS")
+
+markers <-("YS_Garnett_MarkerList.txt")
+```
+# create a new CDS object
+```{r}
+pd <- new("AnnotatedDataFrame", data = )
+fd <- new("AnnotatedDataFrame", data = )
+cds <- newCellDataSet(as(mat, "combinedMatrix"),
+                             phenoData = pd,
+                             featureData = fd)
+
+
+cds<-as.CellDataSet(seurat.comb)
+# generate size factors for normalization later
+cds <- estimateSizeFactors(cds)
+cds_ish <- estimateSizeFactors((cds_ish))
+
+saveRDS(cds, "cds_v1.RDS")
+```
+
+#using classify cells function
+```{r}
+colnames(pData(cds))
+
+#pre-loaded classsifier
+cds <- classify_cells(cds, pbmc_classifier,
+                           db = org.Hs.eg.db,
+                           cluster_extend = TRUE,
+                           cds_gene_id_type = "SYMBOL")
+
+ggplot(pData(cds_seurat), aes(x = nFeature_RNA, y = Size_Factor, color = cell_type)) +
+  geom_point() +
+  theme_bw() +
+  labs(x = "Number of Features (RNA)", y = "Size Factor", title = "Scatter Plot by Cell Type")
+
+
+cds_2<-readRDS("cds_v1.RDS")
+
+#classifer from email
+
+cds_2<-cds
+cds_2 <- classify_cells(cds_mf, classifier,
+                           db = org.Hs.eg.db,
+                           cluster_extend = TRUE,
+                           cds_gene_id_type = "SYMBOL")
+
+classifier2 <- classifier
+classifier2@gene_id_type <-"SYMBOL"
+
+cds_2 <- classify_cells(cds_mf, classifier2,
+                           db = org.Hs.eg.db,
+                           cluster_extend = TRUE,
+                           cds_gene_id_type = "SYMBOL")
+
+saveRDS(cds_2, "cds_v2.RDS")
+########
+seurat.mf$YS_cell_type<-cds_2$cell_type
+pdf("YS_macs.pdf", height = 6, width = 8)
+DimPlot(seurat.mf, group.by = "YS_cell_type", cols = c("YS MF" = "red","Unknown" = "gray"), label = F, (levels = c("YS MF","Unknown"))) + ggtitle("Yolk Sac Macrophages in BPH Subclusters")
+dev.off()
+
+library(Seurat)
+
+# Set the levels of the 'YS_cell_type' column to ensure the desired order
+seurat.mf$YS_cell_type <- factor(seurat.mf$YS_cell_type, levels = c("YS MF", "Unknown"))
+
+# Plot with the specified colors and title
+DimPlot(
+  seurat.mf, 
+  group.by = "YS_cell_type", 
+  cols = c("YS MF" = "red", "Unknown" = "gray"), 
+  label = FALSE
+) + 
+  ggtitle("Yolk Sac Macrophages in BPH Subclusters")
+
+cds_seurat<-as.Seurat(cds_2, slot = "counts", assay = "RNA")
+```
+
+
+#extracting count matrix and dataframe to make seurat object
+```{r}
+count.mat <- Biobase::exprs(cds_2)  
+meta.df <- Biobase::pData(cds_2)
+
+my.seurat <- CreateSeuratObject(counts = count.mat,
+project = "my.project",
+assay = "RNA",
+meta.data = meta.df)
+
+seurat_test<-my.seurat
+
+#seurat normalization steps Data
+seurat_test <- NormalizeData(seurat_test)
+seurat_test <- FindVariableFeatures(seurat_test)
+seurat_test <- ScaleData(seurat_test, verbose = FALSE)
+seurat_test <- RunPCA(seurat_test, features = VariableFeatures(object = seurat_test))
+seurat_test <- RunUMAP(seurat_test, dims = 1:50)
+
+#counts
+print(table(seurat.comb@meta.data$cell_type))
+
+
+DimPlot(seurat_test, group.by = "cell_type")
+DimPlot(seurat.comb, label = TRUE)
+DimPlot(seurat_test, group.by = "cell_type")
+plot <- DimPlot(seurat_test, group.by = "cell_type", cols = c("Unknown" = "gray", "YS MF" = "red"))
+plot <- plot + ggtitle("YS MF vs Unknown Cells in Combined BPH Sample")
+plot
+```
+
+#saving garnett col into og seurat object
+```{r}
+seurat_2<-seurat.comb 
+seurat_2$cell_type<-seurat_test$cell_type
+DimPlot(seurat_2, label = TRUE)
+DimPlot(seurat_2, group.by = "cell_type")
+DimPlot(seurat_2, group.by = "cell_type", cols = c("Unknown" = "gray", "YS MF" = "red"))
+
+
+```
+

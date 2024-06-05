@@ -1,0 +1,363 @@
+---
+title: "M1/M2 Analysis"
+author: "Nadia Lanman"
+date: "3/8/2023"
+output:
+  html_document:
+    toc: true
+    highlight: kate
+    keep_md: yes
+---
+```{r knitr_init, echo=FALSE, cache=FALSE}
+library(knitr)
+library(rmdformats)
+
+## Global options
+options(max.print="75")
+opts_chunk$set(echo=TRUE,
+	             cache=FALSE,
+               prompt=FALSE,
+               tidy=TRUE,
+               comment=NA,
+               message=TRUE,
+               warning=TRUE)
+opts_knit$set(width=75)
+```
+
+Here, we aim to identify cells that have an enrichment of M1 (LPS+IFNg) vs M2 (IL-4, IL-13) gene signatures.  We will use the signatures from the publication by Mathewus Becker et al, published in Scientific Reports in 2015 entitled "Integrated Transcriptomics Establish Macrophage Polarization Signatures and have Potential Applications for Clinical Health and Disease" from Supplemental Tables 2 and 3.
+
+```{r include=FALSE}
+
+library(Seurat)
+library(Matrix)
+#library(scater)
+#library(loomR)
+#remotes::install_github(repo='mojaveazure/loomR',ref='develop')
+#library(tidyverse)
+library(ggforce)
+library(ComplexHeatmap)
+library(ggrepel)
+library(clustree)
+#library(tidyverse)
+library(purrr)
+library(patchwork)
+library(GeneOverlap)
+library(VennDiagram)
+library(dplyr)
+library(ggsci)
+library(ggplot2)
+library(sctransform)
+library(future)
+library(future.apply)
+library(RColorBrewer)
+require(scales)
+library(qusage)
+#library(biomaRt)
+library(lattice)
+#library(ggbiplot)
+#library(patchwork)
+#library(vioplot)
+library('DelayedMatrixStats')
+library('DelayedArray')
+library('org.Hs.eg.db')
+
+set.seed(42)
+
+
+#my_levels <- c(0,1,2,3,4,5,6,7,8,9,10)
+
+macs <- readRDS("/depot/tlratlif/data/P20_2019/scRNA_seq/step4_subclustering/macs/macs.integratedADTnorm.RDS")
+mac_colors <- c("#88CCEE","#CC6677","#DDCC77","#117733","#332288","#AA4499","#44AA99","#999933","#882255","#661100","#6699CC","#888888","deeppink3","darkslategrey")
+
+sigM1 <- c("ADAM28","AIM2","ANKRD22","APOBEC3A","APOL1","APOL3","BATF2","C1R","C1S","CCL19","CD38","CD40","CD80","CFB","CLEC4D","CXCL10","CXCL9","CYBB","DUCP10","DUSP6","ETV7","FAM49A","FAM65B","FCGR1B","FPR2","GADD45G", "GBP1","GBP2","GBP4","GBP5","GCH1","GK","GPR84","GUCY1A3","HERC5","HESX1","HLA-F","IFI27","IFI35","IFI44L","IFIH1","IFIT2","IFIT3","IFITM1","IFITM2","IL15","IL15RA","IL32","INHBA","IRF1","IRF7","ISG15","ISG20","ITGAL","ITGB7","LAG3","LAMP3","LIMK2","LRRK2","MUC1","MX1","NAMPT","NFKBIZ","OAS1","OAS2","OAS3","OASL","OPTN","PAG1","PARP14","PCNX","PDE4B","PIM1","PRKAR2B","PSMB9","PTGS2","RARRES3","RCN1","RHBDF2","RSAD2","SAT1","SCO2","SEPT4","SERPING1","SLAMF7","SLC22A15","SLC25A28","SLC31A2","SLC6A12","SLC7A5","SNTB1","SNX10","SOCS3","SOD2","STAT1","STAT3","STX11","TAP1","TNFAIP6","TNFSF10","TRIM69","UBE2L6","USP18","VAMP5","WARS","XRN1")
+
+sigM2 <- c("ADAM19","ALOX15","ARRB1","BZW2","CARD9","CCL13","CCL17","CCL23","CD1A","CD1C","CD1E","CDR2L","CHN2","CLEC4A","CLIC2","CMTM8","CRIP1","CTSC","DUSP22","EMILIN2","ESPNL","F13A1","FOXQ1","FSCN1","FZD2","GALNTL4","GATM","GPD1L","GSTP1","ITM2C","KCNK6","MAOA","MAP4K1","MAPKAPK3","MFNG","MS4A6A","NMNAT3","OSBPL7","P2RY11","PALLD","PAQR4","PELP1","PLAU","PON2","PPP1R14A","PTGS1","RAMP1","REPS2","RGS18","RRS1","S100A4","SEC14L5","SHPK","SPINT2","TGFB1","TMEM97","VCL","SNF789")
+
+```
+
+
+### Subclustering of macrophages UMAP plots
+
+```{r UMAP t, echo=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=6,fig.cap= "**Combined UMAP**  "}
+DimPlot(
+  macs, label = TRUE,
+  reduction = "umap")+scale_color_manual(values = mac_colors)
+```
+
+UMAP split by sample type
+```{r naiveUMAPplot, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=12, fig.height=6,fig.cap= "**Figure 2.  UMAP Plot of the naive clustering.**"}
+DimPlot(
+  macs,split.by = "sample.Type",
+  reduction = "umap")+scale_color_manual(values = mac_colors)
+```
+
+Calculate a gene module score for the M1 and separately the M2 gene signature.  Calculates the average expression levels of each cluster on a single cell level, subtracted by the aggregated expression of control feature sets  All analyzed features are binned based on averaged expression, and the control features are randomly selected from each bin. The genes included in the M1 signature are
+`r sigM1` 
+
+and the genes that are included in the M2 signature are
+`r sigM2`
+
+```{r include=FALSE}
+list_ofVecs <- list()
+list_ofVecs[[1]]<-as.vector(sigM1)
+list_ofVecs[[2]]<-as.vector(sigM2)
+names(list_ofVecs)<- c("M1","M2")
+DefaultAssay(macs) <- "SCT"
+macScore <- AddModuleScore(object = macs, features=list_ofVecs,name="M",ctrl=500)
+macScore <- AddMetaData(object = macScore, metadata = log1p(macScore@meta.data$M1),col.name = "logM1")
+macScore <- AddMetaData(object = macScore, metadata = log1p(macScore@meta.data$M2),col.name = "logM2")
+```
+
+UMAP plot of signature M1
+```{r M2UMAP1plot, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=12, fig.height=6}
+FeaturePlot(
+  macScore,
+  features="M1",split.by = "sample.Type", min.cutoff = "q10", max.cutoff = "q90",cols=c("lightgrey","red"))
+```
+
+UMAP plot of signature M2
+```{r M2UMAP2plot, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=12, fig.height=6}
+FeaturePlot(
+  macScore,
+  features="M2",split.by = "sample.Type", min.cutoff = "q10", max.cutoff = "q90",cols=c("lightgrey","red"))
+```
+
+Mixed UMAP plot of signature M1 and M2
+```{r mixedUMAP1plot, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=18, fig.height=4}
+FeaturePlot(
+  macScore,
+  features=c("M1","M2"), blend=TRUE,min.cutoff = "q10",max.cutoff = "q90",cols = c("white","red","blue"))
+
+pdf("mixedM1_M2_featurePlot_WtRdBl.pdf",width=18, height=4)
+FeaturePlot(
+  macScore,
+  features=c("M1","M2"), blend=TRUE,min.cutoff = "q10",max.cutoff = "q90",cols = c("white","red","blue"))
+dev.off()
+```
+Feature scatter and correlation between M1 and M2 signatures
+```{r scatterplot, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+FeatureScatter(
+  macScore,
+  feature1="M1", feature2="M2")+scale_color_manual(values = mac_colors)
+
+```
+
+Violin plot of signature M1
+```{r M1UMAPplot, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=10, fig.height=6,fig.cap= "**Figure 2.  UMAP Plot of the naive clustering.**"}
+VlnPlot(
+  macScore,
+  features="M1",split.by = "sample.Type")
+
+```
+
+Violin plot of signature M2 split by sample type
+```{r M2UMAPplot, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=10, fig.height=6}
+VlnPlot(
+  macScore,
+  features="M2",split.by = "sample.Type")
+```
+
+## Boxplots of macrophage signatures
+
+Boxplot of signature M1
+```{r M1boxplot, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=10, fig.height=6}
+plot1 <- VlnPlot(
+  macScore,
+  features="M1",split.by = "sample.Type",pt.size = 0)
+
+plot2 <- VlnPlot(
+  macScore,
+  features="M2",split.by = "sample.Type",pt.size = 0)
+
+ggplot(plot1$data, aes(x=ident, y=M1,fill=split))+geom_boxplot() + xlab(label = "cluster")
+
+
+```
+
+Boxplot of signature M2
+```{r M2boxplot, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=10, fig.height=6}
+
+
+ggplot(plot2$data, aes(x=ident, y=M2,fill=split))+geom_boxplot()+ xlab(label = "cluster")
+
+
+```
+
+## GSEA on M1 and M2 signatures using the QuSAGE R package
+
+Split the datasets by subtype and then calculate the M1 and M2 module score.  For each signature and for each cluster we will perform a pairwise comparison between the cluster c and all other clusters.  The fold-change of the gene set attempts to quantify how highly expressed the signature is in cluster c compared to cells in other clusters.  For example for the M1 comparison in cluster 0, if the fold-change is negative, then cluster 0 expressed M1 signature genes at a lower level than the remainder of the cells in cluysters 1-7.
+
+```{r include=FALSE}
+#first run on each cluster in each group
+labels.mac <- paste0("Cluster_",as.vector(factor(macs@active.ident)))
+number.clusters.mac<- length(unique(macs@active.ident))
+
+cell.sample.mac <- NULL
+
+data.mac <- macs@assays$SCT@scale.data
+data.mac <- as.data.frame(as.matrix(data.mac))
+
+clust.mac <- list()
+clust.comp.mac <- list()
+macnum <- (length(levels(Idents(macs))))
+
+for (i in 1:macnum){
+  t <- labels.mac
+  t[!(t %in% paste0("Cluster_",i-1))] <- "REST"
+  clust.mac[i] <- list(i=t)
+  rm(t)
+  clust.comp.mac[i] <- paste0("Cluster_",i-1,"-REST")
+}
+
+for (i in 1:number.clusters.mac){
+  assign(paste0("mac_results.",i),qusage(data.mac,unlist(clust.mac[i]),unlist(clust.comp.mac[i]),list_ofVecs))
+  
+}
+
+#p.vals.0 = pdf.pVal(mac_results.1)
+#q.vals.0 = p.adjust(p.vals,method="fdr")
+table.c0 <- qsTable(mac_results.1)
+table.c1 <- qsTable(mac_results.2)
+table.c2 <- qsTable(mac_results.3)
+table.c3 <- qsTable(mac_results.4)
+table.c4 <- qsTable(mac_results.5)
+table.c5 <- qsTable(mac_results.6)
+table.c6 <- qsTable(mac_results.7)
+table.c7 <- qsTable(mac_results.8)
+table.c8 <- qsTable(mac_results.9)
+table.c9 <- qsTable(mac_results.10)
+table.c10 <- qsTable(mac_results.11)
+table.c11 <- qsTable(mac_results.12)
+table.c12 <- qsTable(mac_results.13)
+table.c13 <- qsTable(mac_results.14)
+tabletot <- rbind(table.c0, table.c1, table.c2, table.c3, table.c4, table.c5, table.c6, table.c7,table.c8,table.c9,table.c10,table.c11,table.c12,table.c13)
+cluster <- c(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13)
+tabletot2 <- cbind(cluster,tabletot)
+rownames(tabletot2)<- NULL
+#tabletot2$log.fold.change <- round(tabletot2$log.fold.change,digits = 3)
+#tabletot2$log.fold.change <- round(tabletot2$log.fold.change,digits = 3)
+#tabletot2$log.fold.change <- round(tabletot2$log.fold.change,digits = 3)
+write.csv(tabletot2,"macSignature_gsea_qusageResults.csv")
+
+
+#GSVA::performGeneSetEnrichmentAnalysis(mac_cells,assay="RNA",groups=c('cluster','Sample_Type',thresh_p_val = 0.05)
+```
+
+### QuSAGE Results Table
+
+```{r set-options,echo=FALSE, warning=FALSE, message=FALSE}
+options(width='800')
+DT::datatable(tabletot2, rownames = FALSE,fillContainer=TRUE, class=c('cell-border stripe'),options = list(autoWidth=TRUE, scrollY='700px',pageLength=16,scrollX=TRUE)) 
+```
+
+## Barcode Plots of mac clusters comparing M1 and M2 signatures
+
+These plots are composed of two parts: plots of the gene and gene set PDFs (probability density functions) and a barcode plot in the midele of the plot, which shows the mean fold-change of the individual genes in that cluster. In these plots, the top panel of the plot shows the M1 macrophage signature, and that on the bottom shows the M2 macrophage signature. The x-axis of the plo shows the activity of genes and gene sets and the y-axis shows the density. The PDF for the entire gene set is calculated as an average PDF.  The mean and standard deviation for each gene shown here is calculated using a t-test, therefore the individual gene PDFs are generated as t-distributions with parameters mean, standard deviation, and degrees of freedom.
+
+### Cluster 0
+```{r barcode1plot, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+#qusage::plot(mac_results.1)
+plotGeneSetDistributions(mac_results.1,path.index = c("M1","M2"),colorScheme = mac_colors[1])
+```
+
+### Cluster 1
+
+```{r barcode1plot1, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.2,path.index = c("M1","M2"),colorScheme = mac_colors[2])
+```
+
+### Cluster 2
+
+```{r barcode1plot2, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.3,path.index = c("M1","M2"),colorScheme = mac_colors[3])
+```
+
+### Cluster 3
+
+```{r barcode1plot3, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.4,path.index = c("M1","M2"),colorScheme = mac_colors[4])
+```
+
+### Cluster 4
+
+```{r barcode1plot5, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.5,path.index = c("M1","M2"),colorScheme = mac_colors[5])
+```
+
+### Cluster 5
+
+```{r barcode1plot66, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.6,path.index = c("M1","M2"),colorScheme = mac_colors[6])
+```
+
+### Cluster 6
+
+```{r barcode1plot6, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.7,path.index = c("M1","M2"),colorScheme = mac_colors[7])
+```
+
+### Cluster 7
+```{r barcode1plot7, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.8,path.index = c("M1","M2"),colorScheme = mac_colors[8])
+```
+
+### Cluster 8
+
+```{r barcode1plot8, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.9,path.index = c("M1","M2"),colorScheme = mac_colors[9])
+```
+
+### Cluster 9
+
+```{r barcode1plot9, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.10,path.index = c("M1","M2"),colorScheme = mac_colors[10])
+```
+
+
+### Cluster 10
+
+```{r barcode1plot10, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.11,path.index = c("M1","M2"),colorScheme = mac_colors[11])
+```
+
+### Cluster 11
+
+```{r barcode1plot11, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.12,path.index = c("M1","M2"),colorScheme = mac_colors[12])
+```
+
+### Cluster 12
+
+```{r barcode1plot12, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.13,path.index = c("M1","M2"),colorScheme = mac_colors[13])
+```
+
+### Cluster 13
+
+```{r barcode1plot13, echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=20, fig.height=6}
+
+plotGeneSetDistributions(mac_results.14,path.index = c("M1","M2"),colorScheme = mac_colors[14])
+```
+
+
+## Libraries and Packages used in the Analysis
+
+```{r}
+sessionInfo()
+```
+
+
